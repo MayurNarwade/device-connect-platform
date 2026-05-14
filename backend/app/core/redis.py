@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger("aetherlink.redis")
 redis_pool = None
 
-# Check if Redis URL is provided
+# Read directly from environment (or fallback to None)
 REDIS_URL = os.getenv("REDIS_URL")
 
 async def init_redis():
@@ -22,7 +22,6 @@ async def init_redis():
         raise RuntimeError(f"Cannot connect to Redis: {e}")
 
 async def close_redis():
-    global redis_pool
     if redis_pool:
         await redis_pool.close()
         logger.info("Redis connection closed")
