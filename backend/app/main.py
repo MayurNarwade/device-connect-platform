@@ -7,7 +7,6 @@ load_dotenv()
 
 from .api import health, session, turn
 from .ws.signaling import router as ws_router
-from .core.redis import init_redis, close_redis
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
 
@@ -21,15 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router, tags=["health"])
+app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(session.router, prefix="/api", tags=["session"])
 app.include_router(turn.router, prefix="/api", tags=["turn"])
-app.include_router(ws_router)
+app.include_router(ws_router)   # WebSocket route at /ws/signal
 
 @app.on_event("startup")
 async def startup():
-    await init_redis()   # now safe – won't crash if REDIS_URL missing
+    print("🚀 AetherLink backend started")
+    # No Redis needed for basic operation
 
 @app.on_event("shutdown")
 async def shutdown():
-    await close_redis()
+    print("🛑 AetherLink backend shutting down")
