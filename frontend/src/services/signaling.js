@@ -1,95 +1,98 @@
-// frontend/src/services/signaling.js
-let socket = null;
-let messageHandlers = new Map();
-let pendingMessages = [];
+import { useUIStore } from '../stores/useUIStore';
+import { WS_BASE } from '../utils/constants';
+
+let ws = null;
+let messageHandlers = {};
+let currentToken = null;
+let currentSessionId = null;
 let reconnectTimer = null;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 export function connectSignaling(token, sessionId) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    console.warn('Signaling already connected, closing old');
-    socket.close();
-  }
-  
-  const wsUrl = `/ws/signal?token=${token}`;
+  // Store for reconnection
+  currentToken = token;
+  currentSessionId = sessionId;
+
+  // Build WebSocket URL using WS_BASE (relative or absolute)
+  const wsUrl = `${WS_BASE}/signal?token=${token}`;
   console.log('Connecting to signaling:', wsUrl);
-  socket = new WebSocket(wsUrl);
-  
-  socket.onopen = () => {
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
     console.log('✅ Signaling connected');
-    reconnectAttempts = 0;
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    // Flush pending messages
-    if (pendingMessages.length) {
-      console.log(`📤 Flushing ${pendingMessages.length} pending signals`);
-      pendingMessages.forEach(msg => {
-        socket.send(JSON.stringify(msg));
-        console.log('📤 Signaling sent (flushed):', msg.type);
-      });
-      pendingMessages = [];
-    }
+    // Send join message with device name
+    sendSignal({
+      type: 'join',
+      payload: {
+        deviceName: /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile' : 'Desktop'
+      }
+    });
   };
-  
-  socket.onmessage = (event) => {
+
+  ws.onmessage = (event) => {
+    let data;
     try {
-      const data = JSON.parse(event.data);
-      console.log('📨 Signaling received:', data.type);
-      const handler = messageHandlers.get(data.type);
-      if (handler) handler(data);
-      else console.warn('No handler for signal type:', data.type);
+      data = JSON.parse(event.data);
     } catch (err) {
-      console.error('Failed to parse signaling message:', err);
+      return;
     }
-  };
-  
-  socket.onerror = (err) => {
-    console.error('Signaling error:', err);
-  };
-  
-  socket.onclose = () => {
-    console.warn('Signaling closed');
-    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      reconnectTimer = setTimeout(() => {
-        reconnectAttempts++;
-        console.log(`Reconnecting signaling (attempt ${reconnectAttempts})...`);
-        connectSignaling(token, sessionId);
-      }, 2000 * reconnectAttempts);
-    } else {
-      console.error('Max reconnect attempts reached');
+
+    if (data.type === 'pong') return;
+
+    // Forward to registered handlers
+    if (messageHandlers[data.type]) {
+      messageHandlers[data.type].forEach(handler => handler(data));
     }
+
+    // Also dispatch as DOM event (used by WebRTC manager)
+    window.dispatchEvent(new CustomEvent('signal', { detail: data }));
+  };
+
+  ws.onclose = (event) => {
+    console.warn('Signaling closed', event.code, event.reason);
+    useUIStore.getState().addToast('Connection lost. Reconnecting...', 'error');
+    // Attempt reconnect after delay
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      if (ws.readyState === WebSocket.CLOSED && currentSessionId) {
+        console.log('Attempting to reconnect signaling...');
+        connectSignaling(currentToken, currentSessionId);
+      }
+    }, 2000);
+  };
+
+  ws.onerror = (err) => {
+    console.error('Signaling error', err);
   };
 }
 
 export function sendSignal(message) {
-  if (!socket) {
-    console.warn('No signaling socket, queueing message:', message.type);
-    pendingMessages.push(message);
-    return;
-  }
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message));
     console.log('📤 Signaling sent:', message.type);
   } else {
-    console.warn(`Socket not open (state ${socket.readyState}), queueing message:`, message.type);
-    pendingMessages.push(message);
+    console.warn('Cannot send signal, socket not open');
   }
 }
 
 export function onSignal(type, handler) {
-  messageHandlers.set(type, handler);
+  if (!messageHandlers[type]) messageHandlers[type] = [];
+  messageHandlers[type].push(handler);
 }
 
-export function offSignal(type) {
-  messageHandlers.delete(type);
+export function offSignal(type, handler) {
+  if (messageHandlers[type]) {
+    messageHandlers[type] = messageHandlers[type].filter(h => h !== handler);
+  }
 }
 
 export function disconnectSignaling() {
-  if (socket) {
-    socket.close();
-    socket = null;
-  }
   if (reconnectTimer) clearTimeout(reconnectTimer);
-  messageHandlers.clear();
-  pendingMessages = [];
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  currentToken = null;
+  currentSessionId = null;
+  messageHandlers = {};
 }
