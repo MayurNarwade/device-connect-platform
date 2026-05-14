@@ -1,38 +1,65 @@
-from fastapi import APIRouter, Request, HTTPException
-from ..models.schemas import SessionJoinRequest, SessionJoinResponse
-from ..services.otp_service import create_otp_session, validate_otp
-from ..services.session_manager import join_session
-from ..core.security import create_session_token
-from ..core.rate_limit import check_rate_limit
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import secrets
+import os
+from datetime import datetime, timedelta
+import jwt
 
 router = APIRouter()
 
+# Simple in‑memory storage
+sessions = {}   # session_id -> {"otp": str, "devices": [{"device_id": str, "name": str}]}
+
+class SessionJoinResponse(BaseModel):
+    sessionId: str
+    deviceId: str
+    token: str
+    otp: str = None   # only for host
+
+class SessionJoinRequest(BaseModel):
+    otp: str
+
+def create_session_token(session_id: str, device_id: str) -> str:
+    payload = {
+        "session_id": session_id,
+        "device_id": device_id,
+        "exp": datetime.utcnow() + timedelta(hours=24)
+    }
+    secret = os.getenv("SECRET_KEY", "default-secret-change-me")
+    return jwt.encode(payload, secret, algorithm="HS256")
+
 @router.post("/session", response_model=SessionJoinResponse)
-async def create_session(request: Request):
-    await check_rate_limit(request, "otp_create")
-    session_id, otp = await create_otp_session()
-    # Host automatically joins so they can receive signaling events
-    result = await join_session(session_id, device_name="Host Device")
-    if not result:
-        raise HTTPException(status_code=500, detail="Failed to initialize session")
-    device_id, role = result
+async def create_session():
+    session_id = secrets.token_hex(16)
+    otp = secrets.token_hex(3).upper()[:6]   # 6‑digit OTP
+    device_id = secrets.token_hex(8)
+    
+    sessions[session_id] = {
+        "otp": otp,
+        "devices": [{"device_id": device_id, "name": "Host Device"}]
+    }
+    
     token = create_session_token(session_id, device_id)
     return SessionJoinResponse(
         sessionId=session_id,
         deviceId=device_id,
         token=token,
-        otp=otp          # so the frontend can display the code
+        otp=otp
     )
 
 @router.post("/session/join", response_model=SessionJoinResponse)
-async def join(request: Request, body: SessionJoinRequest):
-    await check_rate_limit(request, "otp_join")
-    session_id = await validate_otp(body.otp)
-    if not session_id:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-    result = await join_session(session_id)
-    if not result:
-        raise HTTPException(status_code=400, detail="Session full or no longer available")
-    device_id, role = result
-    token = create_session_token(session_id, device_id)
-    return SessionJoinResponse(sessionId=session_id, deviceId=device_id, token=token)
+async def join_session(join: SessionJoinRequest):
+    for sid, data in sessions.items():
+        if data["otp"] == join.otp:
+            # Check if already two devices (host + one guest)
+            if len(data["devices"]) >= 2:
+                raise HTTPException(status_code=400, detail="Session full")
+            device_id = secrets.token_hex(8)
+            data["devices"].append({"device_id": device_id, "name": "Guest Device"})
+            token = create_session_token(sid, device_id)
+            return SessionJoinResponse(
+                sessionId=sid,
+                deviceId=device_id,
+                token=token
+            )
+    raise HTTPException(status_code=400, detail="Invalid or expired OTP")
