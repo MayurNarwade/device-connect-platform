@@ -1,3 +1,4 @@
+// frontend/src/services/signaling.js
 import { useUIStore } from '../stores/useUIStore';
 import { WS_BASE } from '../utils/constants';
 
@@ -12,8 +13,8 @@ export function connectSignaling(token, sessionId) {
   currentToken = token;
   currentSessionId = sessionId;
 
-  // Build WebSocket URL using WS_BASE (relative or absolute)
-  const wsUrl = `${WS_BASE}/signal?token=${token}`;
+  // ✅ FIXED: Build WebSocket URL using WS_BASE (domain only) + full backend route /ws/signal
+  const wsUrl = `${WS_BASE}/ws/signal?token=${token}`;
   console.log('Connecting to signaling:', wsUrl);
   ws = new WebSocket(wsUrl);
 
